@@ -46,6 +46,9 @@ def create_bot():
         escalation_message = data.get('escalation_message')
         language = data.get('language', 'en')
         bot_category = data.get('category', 'general')
+        vector_weight = data.get('vector_weight', 0.7)
+        keyword_weight = data.get('keyword_weight', 0.3)
+        embedding_model = data.get('embedding_model', 'text-embedding-3-small')
         
         if not bot_id or not bot_name:
             return jsonify({'error': 'bot_id and bot_name are required'}), 400
@@ -66,7 +69,17 @@ INSTRUCTIONS:
 7. Respond in the same language as the question"""
         
         result = bot_manager.create_bot(bot_id, bot_name, system_prompt, confidence_threshold, 
-                                       escalation_message, language)
+                                       escalation_message, language, bot_category)
+        
+        # Update bot with additional configuration
+        if result["success"]:
+            bot_config = bot_manager.get_bot(bot_id)
+            if bot_config:
+                bot_config.update_config(
+                    vector_weight=vector_weight,
+                    keyword_weight=keyword_weight,
+                    embedding_model=embedding_model
+                )
         
         # Add custom abbreviations if provided
         custom_abbreviations = data.get('custom_abbreviations', {})
@@ -109,7 +122,7 @@ def load_qa_database(bot_id):
         # Generate embeddings with error handling
         embeddings: List[List[float]] = []
         for question in questions:
-            embedding = VectorSearcher.get_embedding(question)
+            embedding = VectorSearcher.get_embedding(question, bot_config.embedding_model)
             if embedding is not None:
                 embeddings.append(embedding)
         
@@ -149,6 +162,9 @@ def process_query(bot_id):
         question = data.get('question')
         custom_abbreviations = data.get('abbreviations', {})
         language_preference = data.get('language', 'auto')
+        search_method = data.get('search_method', 'hybrid')  # hybrid, vector, keyword, rrf
+        min_similarity = data.get('min_similarity', 0.0)
+        boost_category = data.get('boost_category')
         
         if not phone_number or not question:
             return jsonify({'error': 'Missing phone_number or question'}), 400
@@ -175,34 +191,73 @@ def process_query(bot_id):
         print(f"[{bot_id}] Detected language: {detected_language}")
         
         # Step 2: Generate embedding
-        query_embedding = VectorSearcher.get_embedding(cleaned_query)
+        query_embedding = VectorSearcher.get_embedding(cleaned_query, bot_config.embedding_model)
         if not query_embedding:
             bot_config.update_performance_metrics(time.time() - start_time, False)
             return jsonify({'error': 'Failed to generate embedding'}), 500
         
-        # Step 3: Vector Search
-        vector_results = VectorSearcher.search(
-            query_embedding, 
-            bot_config.qa_database, 
-            bot_config.qa_embeddings, 
-            top_k=5
-        )
+        # Step 3 & 4: Search based on method
+        vector_results = []
+        keyword_results = []
         
-        # Step 4: Keyword Search
-        keyword_results = KeywordSearcher.search(
-            cleaned_query,
-            bot_config.qa_database,
-            bot_config.tfidf_vectorizer,
-            bot_config.tfidf_matrix,
-            top_k=5
-        )
+        if search_method in ['hybrid', 'vector', 'rrf']:
+            # Vector Search
+            vector_results = VectorSearcher.search(
+                query_embedding, 
+                bot_config.qa_database, 
+                bot_config.qa_embeddings, 
+                top_k=10,  # Get more results for better reranking
+                similarity_metric="cosine"
+            )
         
-        # Step 5: Rerank Results
-        reranked_results = ResultReranker.combine_and_rerank(
-            vector_results, 
-            keyword_results,
-            bot_config.vector_weight
-        )
+        if search_method in ['hybrid', 'keyword', 'rrf']:
+            # Keyword Search
+            if boost_category:
+                keyword_results = KeywordSearcher.advanced_search(
+                    cleaned_query,
+                    bot_config.qa_database,
+                    bot_config.tfidf_vectorizer,
+                    bot_config.tfidf_matrix,
+                    top_k=10,  # Get more results for better reranking
+                    min_similarity=min_similarity,
+                    boost_category=boost_category,
+                    category_boost_factor=1.5
+                )
+            else:
+                keyword_results = KeywordSearcher.search(
+                    cleaned_query,
+                    bot_config.qa_database,
+                    bot_config.tfidf_vectorizer,
+                    bot_config.tfidf_matrix,
+                    top_k=10,  # Get more results for better reranking
+                    min_similarity=min_similarity
+                )
+        
+        # Step 5: Rerank Results based on method
+        reranked_results = []
+        if search_method == 'rrf':
+            # Use reciprocal rank fusion
+            reranked_results = ResultReranker.reciprocal_rank_fusion(vector_results, keyword_results)
+        elif search_method == 'hybrid':
+            # Use weighted combination
+            reranked_results = ResultReranker.combine_and_rerank(
+                vector_results, 
+                keyword_results,
+                bot_config.vector_weight
+            )
+        elif search_method == 'vector':
+            # Use only vector results
+            reranked_results = vector_results[:5]
+        elif search_method == 'keyword':
+            # Use only keyword results
+            reranked_results = keyword_results[:5]
+        else:
+            # Default to weighted combination
+            reranked_results = ResultReranker.combine_and_rerank(
+                vector_results, 
+                keyword_results,
+                bot_config.vector_weight
+            )
         
         if not reranked_results:
             # No results found - escalate
@@ -218,7 +273,7 @@ def process_query(bot_id):
             })
         
         # Step 6: Check Confidence Score
-        top_score = reranked_results[0]['final_score']
+        top_score = reranked_results[0]['final_score'] if 'final_score' in reranked_results[0] else reranked_results[0]['score']
         print(f"[{bot_id}] Top confidence score: {top_score}")
         
         if top_score < bot_config.confidence_threshold:
@@ -232,7 +287,8 @@ def process_query(bot_id):
                 'answer': bot_config.escalation_message,
                 'confidence': top_score,
                 'escalated': True,
-                'matched_question': reranked_results[0]['question']
+                'matched_question': reranked_results[0]['question'],
+                'search_method': search_method
             })
         
         # Step 7: High confidence - Generate answer
@@ -254,7 +310,8 @@ def process_query(bot_id):
             'escalated': False,
             'matched_question': reranked_results[0]['question'],
             'category': reranked_results[0]['category'],
-            'detected_language': detected_language
+            'detected_language': detected_language,
+            'search_method': search_method
         })
         
     except Exception as e:
