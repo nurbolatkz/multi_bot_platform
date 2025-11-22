@@ -17,7 +17,8 @@ class BotConfig:
     def __init__(self, bot_id: str, bot_name: str, system_prompt: str, 
                  confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
                  escalation_message: Optional[str] = None,
-                 language: str = "en"):
+                 language: str = "en",
+                 category: str = "general"):
         # Core bot identification
         self.bot_id = bot_id
         self.bot_name = bot_name
@@ -26,6 +27,7 @@ class BotConfig:
         self.system_prompt = system_prompt
         self.confidence_threshold = confidence_threshold
         self.language = language
+        self.category = category
         self.escalation_message = escalation_message or (
             "I don't have enough information to answer this accurately. "
             "Your question has been forwarded to our support team who will respond within 24 hours."
@@ -61,7 +63,7 @@ class BotConfig:
         """Update bot configuration parameters"""
         allowed_fields = {
             'system_prompt', 'confidence_threshold', 'language', 'escalation_message',
-            'embedding_model', 'chat_model', 'vector_weight', 'keyword_weight'
+            'embedding_model', 'chat_model', 'vector_weight', 'keyword_weight', 'category'
         }
         
         for key, value in kwargs.items():
@@ -109,6 +111,7 @@ class BotConfig:
             'bot_id': self.bot_id,
             'bot_name': self.bot_name,
             'language': self.language,
+            'category': self.category,
             'confidence_threshold': self.confidence_threshold,
             'embedding_model': self.embedding_model,
             'chat_model': self.chat_model,

@@ -45,6 +45,7 @@ def create_bot():
         confidence_threshold = data.get('confidence_threshold', DEFAULT_CONFIDENCE_THRESHOLD)
         escalation_message = data.get('escalation_message')
         language = data.get('language', 'en')
+        bot_category = data.get('category', 'general')
         
         if not bot_id or not bot_name:
             return jsonify({'error': 'bot_id and bot_name are required'}), 400
@@ -66,6 +67,11 @@ INSTRUCTIONS:
         
         result = bot_manager.create_bot(bot_id, bot_name, system_prompt, confidence_threshold, 
                                        escalation_message, language)
+        
+        # Add custom abbreviations if provided
+        custom_abbreviations = data.get('custom_abbreviations', {})
+        if custom_abbreviations:
+            QueryPreprocessor.add_custom_abbreviations(bot_id, custom_abbreviations)
         
         if not result["success"]:
             return jsonify({'error': result["error"]}), 400
@@ -142,14 +148,31 @@ def process_query(bot_id):
         phone_number = data.get('phone_number')
         question = data.get('question')
         custom_abbreviations = data.get('abbreviations', {})
+        language_preference = data.get('language', 'auto')
         
         if not phone_number or not question:
             return jsonify({'error': 'Missing phone_number or question'}), 400
         
-        # Step 1: Preprocess query
-        cleaned_query = QueryPreprocessor.clean(question, custom_abbreviations)
+        # Step 1: Preprocess query with enhanced processing
+        # Get bot-specific custom abbreviations
+        bot_custom_abbreviations = QueryPreprocessor.get_custom_abbreviations(bot_id)
+        # Merge with request-specific abbreviations
+        if custom_abbreviations:
+            bot_custom_abbreviations.update(custom_abbreviations)
+        
+        # Determine bot category for appropriate abbreviation expansion
+        bot_category = getattr(bot_config, 'category', 'general')
+        
+        cleaned_query, detected_language = QueryPreprocessor.clean(
+            question, 
+            bot_custom_abbreviations, 
+            language_preference,
+            bot_category
+        )
+        
         print(f"[{bot_id}] Original: {question}")
         print(f"[{bot_id}] Cleaned: {cleaned_query}")
+        print(f"[{bot_id}] Detected language: {detected_language}")
         
         # Step 2: Generate embedding
         query_embedding = VectorSearcher.get_embedding(cleaned_query)
@@ -217,7 +240,7 @@ def process_query(bot_id):
             question, 
             reranked_results,
             bot_config.system_prompt,
-            bot_config.language
+            detected_language  # Use detected language for response
         )
         
         # Update performance metrics
@@ -230,7 +253,8 @@ def process_query(bot_id):
             'confidence': top_score,
             'escalated': False,
             'matched_question': reranked_results[0]['question'],
-            'category': reranked_results[0]['category']
+            'category': reranked_results[0]['category'],
+            'detected_language': detected_language
         })
         
     except Exception as e:

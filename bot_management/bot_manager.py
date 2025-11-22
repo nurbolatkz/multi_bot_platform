@@ -12,7 +12,8 @@ class BotManager:
     def create_bot(self, bot_id: str, bot_name: str, system_prompt: str, 
                    confidence_threshold: float = 0.75,
                    escalation_message: Optional[str] = None,
-                   language: str = "en") -> dict:
+                   language: str = "en",
+                   category: str = "general") -> dict:
         """Create a new bot instance"""
         if bot_id in self.bots:
             return {
@@ -27,7 +28,8 @@ class BotManager:
                 system_prompt=system_prompt,
                 confidence_threshold=confidence_threshold,
                 escalation_message=escalation_message,
-                language=language
+                language=language,
+                category=category
             )
             self.creation_timestamps[bot_id] = datetime.now().isoformat()
             
@@ -74,6 +76,8 @@ class BotManager:
                 bot.escalation_message = kwargs['escalation_message']
             if 'language' in kwargs:
                 bot.language = kwargs['language']
+            if 'category' in kwargs:
+                bot.category = kwargs['category']
             
             return {
                 "success": True,
@@ -115,6 +119,7 @@ class BotManager:
             {
                 'id': bot_id,
                 'name': config.bot_name,
+                'category': config.category,
                 'qa_count': len(config.qa_database),
                 'created_at': self.creation_timestamps.get(bot_id, "Unknown"),
                 'query_count': config.query_count,
@@ -144,6 +149,7 @@ class BotManager:
             "success": True,
             "bot_id": bot_id,
             "bot_name": bot.bot_name,
+            "category": bot.category,
             "created_at": self.creation_timestamps.get(bot_id, "Unknown"),
             "total_queries": bot.query_count,
             "total_escalations": bot.escalation_count,
