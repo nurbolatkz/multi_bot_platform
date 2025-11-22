@@ -8,6 +8,8 @@ from rag_pipeline.result_reranker import ResultReranker
 from rag_pipeline.answer_generator import AnswerGenerator
 from utils.moderator_queue import ModeratorQueue
 from utils.health_checker import HealthChecker
+from api_endpoints.middleware import validate_bot_exists, validate_bot_ready
+from api_endpoints.bot_dispatcher import BotDispatcher
 from sklearn.feature_extraction.text import TfidfVectorizer
 import os
 import time
@@ -18,6 +20,7 @@ app = Flask(__name__)
 # Initialize bot manager and health checker
 bot_manager = BotManager()
 health_checker = HealthChecker(bot_manager)
+bot_dispatcher = BotDispatcher(bot_manager)
 
 # Start health checks
 health_checker.start_health_checks()
@@ -73,6 +76,7 @@ INSTRUCTIONS:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/bot/<bot_id>/load_qa', methods=['POST'])
+@validate_bot_exists(bot_manager)
 def load_qa_database(bot_id):
     """Load Q&A database for specific bot"""
     try:
@@ -123,6 +127,7 @@ def load_qa_database(bot_id):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/bot/<bot_id>/query', methods=['POST'])
+@validate_bot_ready(bot_manager)
 def process_query(bot_id):
     """Process query for specific bot"""
     start_time = time.time()
@@ -235,6 +240,7 @@ def process_query(bot_id):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/bot/<bot_id>/config', methods=['GET', 'PUT'])
+@validate_bot_exists(bot_manager)
 def bot_config_endpoint(bot_id):
     """Get or update bot configuration"""
     if request.method == 'GET':
@@ -255,6 +261,7 @@ def bot_config_endpoint(bot_id):
         return jsonify(result)
 
 @app.route('/bot/<bot_id>/delete', methods=['DELETE'])
+@validate_bot_exists(bot_manager)
 def delete_bot(bot_id):
     """Delete a bot instance"""
     result = bot_manager.delete_bot(bot_id)
@@ -265,6 +272,7 @@ def delete_bot(bot_id):
     return jsonify(result)
 
 @app.route('/bot/<bot_id>/stats', methods=['GET'])
+@validate_bot_exists(bot_manager)
 def bot_stats(bot_id):
     """Get bot statistics"""
     result = bot_manager.get_bot_stats(bot_id)
@@ -277,11 +285,9 @@ def bot_stats(bot_id):
     return jsonify(result)
 
 @app.route('/bot/<bot_id>/health', methods=['GET'])
+@validate_bot_exists(bot_manager)
 def bot_health(bot_id):
     """Get health status for a specific bot"""
-    if not bot_manager.bot_exists(bot_id):
-        return jsonify({'error': f'Bot {bot_id} not found'}), 404
-    
     health_status = health_checker.get_bot_health(bot_id)
     health_status['last_check_time'] = health_checker.get_last_check_time(bot_id)
     
