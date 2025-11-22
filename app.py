@@ -10,7 +10,8 @@ from utils.moderator_queue import ModeratorQueue
 from utils.health_checker import HealthChecker
 from sklearn.feature_extraction.text import TfidfVectorizer
 import os
-from typing import Dict, Any, Optional
+import time
+from typing import Dict, Any, Optional, List
 
 app = Flask(__name__)
 
@@ -85,22 +86,31 @@ def load_qa_database(bot_id):
         if not qa_data:
             return jsonify({'error': 'No Q&A pairs provided'}), 400
         
-        # Load Q&A database
-        bot_config.qa_database = qa_data
+        # Clear existing database
+        bot_config.clear_qa_database()
+        
+        # Add QA pairs
+        bot_config.add_qa_pairs(qa_data)
         
         # Generate embeddings for all questions
         print(f"[{bot_id}] Generating embeddings...")
-        bot_config.qa_embeddings = []
         questions = [item['question'] for item in bot_config.qa_database]
         
+        # Generate embeddings with error handling
+        embeddings: List[List[float]] = []
         for question in questions:
             embedding = VectorSearcher.get_embedding(question)
-            bot_config.qa_embeddings.append(embedding)
+            if embedding is not None:
+                embeddings.append(embedding)
+        
+        bot_config.qa_embeddings = embeddings
         
         # Create TF-IDF matrix for keyword search
         print(f"[{bot_id}] Creating TF-IDF matrix...")
-        bot_config.tfidf_vectorizer = TfidfVectorizer(max_features=1000, ngram_range=(1, 2))
-        bot_config.tfidf_matrix = bot_config.tfidf_vectorizer.fit_transform(questions)
+        if questions:  # Only create TF-IDF if we have questions
+            bot_config.tfidf_vectorizer = TfidfVectorizer(max_features=1000, ngram_range=(1, 2))
+            if bot_config.tfidf_vectorizer is not None:
+                bot_config.tfidf_matrix = bot_config.tfidf_vectorizer.fit_transform(questions)
         
         return jsonify({
             'status': 'success',
@@ -115,6 +125,9 @@ def load_qa_database(bot_id):
 @app.route('/bot/<bot_id>/query', methods=['POST'])
 def process_query(bot_id):
     """Process query for specific bot"""
+    start_time = time.time()
+    bot_config = None
+    
     try:
         bot_config = bot_manager.get_bot(bot_id)
         if not bot_config:
@@ -128,8 +141,6 @@ def process_query(bot_id):
         if not phone_number or not question:
             return jsonify({'error': 'Missing phone_number or question'}), 400
         
-        bot_config.query_count += 1
-        
         # Step 1: Preprocess query
         cleaned_query = QueryPreprocessor.clean(question, custom_abbreviations)
         print(f"[{bot_id}] Original: {question}")
@@ -138,6 +149,7 @@ def process_query(bot_id):
         # Step 2: Generate embedding
         query_embedding = VectorSearcher.get_embedding(cleaned_query)
         if not query_embedding:
+            bot_config.update_performance_metrics(time.time() - start_time, False)
             return jsonify({'error': 'Failed to generate embedding'}), 500
         
         # Step 3: Vector Search
@@ -158,12 +170,17 @@ def process_query(bot_id):
         )
         
         # Step 5: Rerank Results
-        reranked_results = ResultReranker.combine_and_rerank(vector_results, keyword_results)
+        reranked_results = ResultReranker.combine_and_rerank(
+            vector_results, 
+            keyword_results,
+            bot_config.vector_weight
+        )
         
         if not reranked_results:
             # No results found - escalate
             ModeratorQueue.add_to_queue(bot_id, phone_number, question, 0.0)
             bot_config.escalation_count += 1
+            bot_config.update_performance_metrics(time.time() - start_time, False)
             return jsonify({
                 'bot_id': bot_id,
                 'phone_number': phone_number,
@@ -180,6 +197,7 @@ def process_query(bot_id):
             # Low confidence - escalate to moderator
             ModeratorQueue.add_to_queue(bot_id, phone_number, question, top_score)
             bot_config.escalation_count += 1
+            bot_config.update_performance_metrics(time.time() - start_time, False)
             return jsonify({
                 'bot_id': bot_id,
                 'phone_number': phone_number,
@@ -197,6 +215,9 @@ def process_query(bot_id):
             bot_config.language
         )
         
+        # Update performance metrics
+        bot_config.update_performance_metrics(time.time() - start_time, True)
+        
         return jsonify({
             'bot_id': bot_id,
             'phone_number': phone_number,
@@ -209,6 +230,8 @@ def process_query(bot_id):
         
     except Exception as e:
         print(f"Error processing query: {e}")
+        if bot_config:
+            bot_config.update_performance_metrics(time.time() - start_time, False)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/bot/<bot_id>/config', methods=['GET', 'PUT'])
@@ -219,16 +242,7 @@ def bot_config_endpoint(bot_id):
         if not bot_config:
             return jsonify({'error': f'Bot {bot_id} not found'}), 404
         
-        return jsonify({
-            'bot_id': bot_config.bot_id,
-            'bot_name': bot_config.bot_name,
-            'confidence_threshold': bot_config.confidence_threshold,
-            'language': bot_config.language,
-            'qa_count': len(bot_config.qa_database),
-            'query_count': bot_config.query_count,
-            'escalation_count': bot_config.escalation_count,
-            'created_at': bot_manager.creation_timestamps.get(bot_id, "Unknown")
-        })
+        return jsonify(bot_config.get_config_summary())
     
     elif request.method == 'PUT':
         data: Dict[str, Any] = request.json or {}
