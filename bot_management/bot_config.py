@@ -10,6 +10,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_CHAT_MODEL = "gpt-4o-mini"
 DEFAULT_VECTOR_WEIGHT = 0.7
 DEFAULT_KEYWORD_WEIGHT = 0.3
+DEFAULT_RESPONSE_STYLE = "concise"
 
 class BotConfig:
     """Configuration for each bot with complete data isolation"""
@@ -38,6 +39,7 @@ class BotConfig:
         self.chat_model = DEFAULT_CHAT_MODEL
         self.vector_weight = DEFAULT_VECTOR_WEIGHT
         self.keyword_weight = DEFAULT_KEYWORD_WEIGHT
+        self.response_style = DEFAULT_RESPONSE_STYLE
         
         # Data storage - isolated per bot
         self.qa_database: List[Dict[str, Any]] = []
@@ -63,7 +65,8 @@ class BotConfig:
         """Update bot configuration parameters"""
         allowed_fields = {
             'system_prompt', 'confidence_threshold', 'language', 'escalation_message',
-            'embedding_model', 'chat_model', 'vector_weight', 'keyword_weight', 'category'
+            'embedding_model', 'chat_model', 'vector_weight', 'keyword_weight', 'category',
+            'response_style'
         }
         
         for key, value in kwargs.items():
@@ -112,6 +115,7 @@ class BotConfig:
             'bot_name': self.bot_name,
             'language': self.language,
             'category': self.category,
+            'response_style': self.response_style,
             'confidence_threshold': self.confidence_threshold,
             'embedding_model': self.embedding_model,
             'chat_model': self.chat_model,

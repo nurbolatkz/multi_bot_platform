@@ -49,6 +49,8 @@ def create_bot():
         vector_weight = data.get('vector_weight', 0.7)
         keyword_weight = data.get('keyword_weight', 0.3)
         embedding_model = data.get('embedding_model', 'text-embedding-3-small')
+        chat_model = data.get('chat_model', 'gpt-4o-mini')
+        response_style = data.get('response_style', 'concise')
         
         if not bot_id or not bot_name:
             return jsonify({'error': 'bot_id and bot_name are required'}), 400
@@ -78,7 +80,9 @@ INSTRUCTIONS:
                 bot_config.update_config(
                     vector_weight=vector_weight,
                     keyword_weight=keyword_weight,
-                    embedding_model=embedding_model
+                    embedding_model=embedding_model,
+                    chat_model=chat_model,
+                    response_style=response_style
                 )
         
         # Add custom abbreviations if provided
@@ -165,6 +169,9 @@ def process_query(bot_id):
         search_method = data.get('search_method', 'hybrid')  # hybrid, vector, keyword, rrf
         min_similarity = data.get('min_similarity', 0.0)
         boost_category = data.get('boost_category')
+        response_style = data.get('response_style', getattr(bot_config, 'response_style', 'concise'))
+        temperature = data.get('temperature', 0.3)
+        max_tokens = data.get('max_tokens', 500)
         
         if not phone_number or not question:
             return jsonify({'error': 'Missing phone_number or question'}), 400
@@ -269,36 +276,43 @@ def process_query(bot_id):
                 'phone_number': phone_number,
                 'answer': bot_config.escalation_message,
                 'confidence': 0.0,
-                'escalated': True
+                'escalated': True,
+                'matched_question': reranked_results[0]['question'] if reranked_results else '',
+                'search_method': search_method
             })
         
-        # Step 6: Check Confidence Score
-        top_score = reranked_results[0]['final_score'] if 'final_score' in reranked_results[0] else reranked_results[0]['score']
-        print(f"[{bot_id}] Top confidence score: {top_score}")
+        # Step 6: Generate Answer with Enhanced Features
+        answer, confidence, confidence_reason, response_metadata = AnswerGenerator.generate_with_confidence(
+            question, 
+            reranked_results,
+            bot_config.system_prompt,
+            detected_language
+        )
         
-        if top_score < bot_config.confidence_threshold:
+        # Calculate final confidence score
+        top_score = reranked_results[0]['final_score'] if 'final_score' in reranked_results[0] else reranked_results[0]['score']
+        final_confidence = min(top_score, confidence)  # Use the more conservative confidence score
+        
+        print(f"[{bot_id}] Final confidence score: {final_confidence}")
+        
+        if final_confidence < bot_config.confidence_threshold:
             # Low confidence - escalate to moderator
-            ModeratorQueue.add_to_queue(bot_id, phone_number, question, top_score)
+            ModeratorQueue.add_to_queue(bot_id, phone_number, question, final_confidence)
             bot_config.escalation_count += 1
             bot_config.update_performance_metrics(time.time() - start_time, False)
             return jsonify({
                 'bot_id': bot_id,
                 'phone_number': phone_number,
                 'answer': bot_config.escalation_message,
-                'confidence': top_score,
+                'confidence': final_confidence,
+                'confidence_reason': confidence_reason,
                 'escalated': True,
                 'matched_question': reranked_results[0]['question'],
-                'search_method': search_method
+                'search_method': search_method,
+                'response_metadata': response_metadata
             })
         
-        # Step 7: High confidence - Generate answer
-        answer = AnswerGenerator.generate(
-            question, 
-            reranked_results,
-            bot_config.system_prompt,
-            detected_language  # Use detected language for response
-        )
-        
+        # Step 7: High confidence - Return answer
         # Update performance metrics
         bot_config.update_performance_metrics(time.time() - start_time, True)
         
@@ -306,12 +320,14 @@ def process_query(bot_id):
             'bot_id': bot_id,
             'phone_number': phone_number,
             'answer': answer,
-            'confidence': top_score,
+            'confidence': final_confidence,
+            'confidence_reason': confidence_reason,
             'escalated': False,
             'matched_question': reranked_results[0]['question'],
             'category': reranked_results[0]['category'],
             'detected_language': detected_language,
-            'search_method': search_method
+            'search_method': search_method,
+            'response_metadata': response_metadata
         })
         
     except Exception as e:
